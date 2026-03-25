@@ -3,16 +3,19 @@
  */
 
 import type { Message, ToolDefinition, ToolResult, AgentConfig } from "./types.js";
-import type { LLMClientWithTools, ToolSchema } from "./llm/types.js";
+import type { LLMClientWithTools } from "./llm/types.js";
 import { getBuiltinTools } from "./tools/index.js";
-import { join } from "node:path";
+import { buildAgentTooling } from "./tools/tooling-mode.js";
+import { runBuiltinToolsCode } from "./tools/ptc-sandbox.js";
 import { agentLogger, error } from "./agent-log.js";
 import { SYSTEM_PROMPT } from "./prompts.js";
 import {
   UNKNOWN_TOOL_MESSAGE,
   MAX_STEPS_MESSAGE,
   getToolCallSummary,
+  PTC_SYSTEM_APPEND,
 } from "./constants.js";
+import type { ToolCallMode } from "./config.js";
 import { appendAssistantTextTurn, appendAssistantToolRound } from "./agent-conversation.js";
 import type { LlmUsageEvent } from "./session-store.js";
 import { usageEventFromApi } from "./session-store.js";
@@ -47,6 +50,8 @@ export interface RunOptions {
   onProgress?: (event: ProgressEvent) => void;
   /** Abort signal to interrupt the run */
   signal?: AbortSignal;
+  /** standard: each builtin is its own tool. ptc: run_builtin_tools_code + MCP only. */
+  toolCallMode?: ToolCallMode;
 }
 
 export type ProgressEvent =
@@ -141,26 +146,49 @@ export function createAgent(options: AgentOptions) {
   const maxSteps = config.maxSteps ?? 20;
   const model = config.model ?? process.env.OPENAI_MODEL ?? undefined;
 
-  const allTools = [...getBuiltinTools(), ...extraTools];
-  const toolsByName = new Map(allTools.map((t) => [t.definition.name, t]));
-
-  const toolSchemas: ToolSchema[] = allTools.map((t) => ({
-    type: "function",
-    function: {
-      name: t.definition.name,
-      description: t.definition.description,
-      parameters: t.definition.parameters,
-    },
-  }));
-
   async function run(userRequest: string, options?: RunOptions): Promise<RunResult> {
     const effectiveModel = options?.model ?? model ?? process.env.OPENAI_MODEL;
     agentLogger.runStart(userRequest, { options, maxSteps, model: effectiveModel });
     const initialMessages = options?.initialMessages ?? [];
     const onProgress = options?.onProgress;
     const signal = options?.signal;
+    const toolCallMode: ToolCallMode = options?.toolCallMode ?? "standard";
+    const builtins = getBuiltinTools();
+
+    const ptcMetaHandler =
+      toolCallMode === "ptc"
+        ? async (args: Record<string, unknown>) => {
+            return runBuiltinToolsCode({
+              code: String(args.code ?? ""),
+              cwd,
+              builtins,
+              signal,
+              hooks: {
+                onSubToolCall(name, argsJson) {
+                  agentLogger.toolCall(name, argsJson);
+                  onProgress?.({ type: "tool_call", name, args: argsJson });
+                },
+                onSubToolResult(name, content, isError) {
+                  agentLogger.toolResult(name, content, isError);
+                  onProgress?.({ type: "tool_result", content, isError });
+                },
+              },
+            });
+          }
+        : undefined;
+
+    const { toolSchemas, toolsByName } = buildAgentTooling(
+      toolCallMode,
+      builtins,
+      extraTools,
+      ptcMetaHandler
+    );
+
+    const fullSystem =
+      toolCallMode === "ptc" ? systemPrompt + PTC_SYSTEM_APPEND : systemPrompt;
+
     const messages: Message[] = [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: fullSystem },
       ...initialMessages,
       { role: "user", content: userRequest },
     ];
@@ -331,7 +359,7 @@ export function createAgent(options: AgentOptions) {
         // Ensure arguments are valid JSON string
         const validArgsString = ensureValidJsonArguments(tc.arguments, tc.name);
         agentLogger.toolCall(tc.name, validArgsString);
-        const tool = toolsByName.get(tc.name);
+        const toolEntry = toolsByName.get(tc.name);
 
         // Emit tool_call event before executing the tool
         onProgress?.({ type: "tool_call", name: tc.name, args: validArgsString });
@@ -339,13 +367,13 @@ export function createAgent(options: AgentOptions) {
         let content: string;
         let isError = false;
         try {
-          if (!tool) {
+          if (!toolEntry) {
             content = UNKNOWN_TOOL_MESSAGE(tc.name);
             isError = true;
             agentLogger.toolResult(tc.name, content, true);
           } else {
             const args = safeParseArguments(validArgsString, tc.name);
-            content = await tool.handler(args, { cwd });
+            content = await toolEntry.handler(args, { cwd });
             agentLogger.toolResult(tc.name, content, false);
           }
         } catch (err) {

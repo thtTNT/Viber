@@ -66,7 +66,16 @@ export const UI_LABELS = {
 /**
  * Available commands in interactive mode.
  */
-export const UI_COMMANDS = '/status /help /session /summary /mcp /clear /quit';
+export const UI_COMMANDS = '/status /help /session /config /summary /mcp /clear /quit';
+
+/**
+ * Appended to system prompt when TOOL_CALL_MODE is PTC.
+ */
+export const PTC_SYSTEM_APPEND = `
+
+## Programmatic tools (PTC)
+You are in PTC mode. Use the tool run_builtin_tools_code with a string field code containing JavaScript. The host wraps your code in an async function: use await with built-in helpers named like the usual tools (read_file, write_file, list_dir, search, search_replace, update_file, copy_or_move_file, run_shell). Pass the same argument objects as in standard mode (plain objects). You may use JSON, RegExp, Array/String methods, Map, Set, etc., to filter or aggregate before returning a concise result. MCP tools are not available inside the sandbox; invoke them with separate tool_calls using their mcp__ names. Return a short string or JSON-serializable value at the end.
+`;
 
 /**
  * Tips text shown in interactive mode.

@@ -10,7 +10,11 @@ import {
   exportSessionToMarkdown,
   type LlmUsageSnapshot,
 } from "./session-store.js";
-import { SUB_SCREEN_SESSION, type OpenSubScreenRequest } from "./tui/sub-screen-types.js";
+import {
+  SUB_SCREEN_SESSION,
+  SUB_SCREEN_CONFIG,
+  type OpenSubScreenRequest,
+} from "./tui/sub-screen-types.js";
 
 import type { Message } from "./types.js";
 import { probeMcpServers } from "./mcp/session.js";
@@ -207,16 +211,18 @@ registerCommand({
     const model = config.MODEL || process.env.OPENAI_MODEL || "not set";
     const baseUrl = config.BASE_URL || process.env.OPENAI_BASE_URL || "default (api.openai.com)";
     const apiKeySet = !!(config.API_KEY || process.env.OPENAI_API_KEY);
-    
+    const toolMode = config.TOOL_CALL_MODE ?? "standard";
+
     // Format values with better alignment
-    const labelWidth = 9; // Width for labels like "Model:", "API URL:", etc.
-    const formatLine = (label: string, value: string) => 
+    const labelWidth = 14; // Width for labels like "Model:", "Tool mode:", etc.
+    const formatLine = (label: string, value: string) =>
       `│ ${label.padEnd(labelWidth)} ${value}`;
-    
+
     const statusLines = [
       formatLine("Model:", model),
       formatLine("API URL:", baseUrl),
       formatLine("API Key:", apiKeySet ? "✓ configured" : "✗ not set"),
+      formatLine("Tool mode:", toolMode === "ptc" ? "ptc (sandbox JS)" : "standard"),
       formatLine("CWD:", cwd),
     ];
     
@@ -493,7 +499,21 @@ registerCommand({
         activeSessionName: context?.sessionName,
         cwd: context?.cwd ?? process.cwd(),
       },
-    },
+    } satisfies OpenSubScreenRequest,
+  }),
+});
+
+// /config — tool call mode (standard vs PTC)
+registerCommand({
+  name: "config",
+  description: "Open settings (tool call mode: standard vs PTC)",
+  aliases: ["settings"],
+  handler: () => ({
+    handled: true,
+    openSubScreen: {
+      id: SUB_SCREEN_CONFIG,
+      context: {},
+    } satisfies OpenSubScreenRequest,
   }),
 });
 

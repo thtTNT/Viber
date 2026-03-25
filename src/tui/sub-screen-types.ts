@@ -9,6 +9,7 @@
  */
 
 export const SUB_SCREEN_SESSION = "session" as const;
+export const SUB_SCREEN_CONFIG = "config" as const;
 
 export type SessionSubScreenContext = {
   activeSessionId: string;
@@ -17,7 +18,14 @@ export type SessionSubScreenContext = {
   cwd: string;
 };
 
-export type OpenSubScreenRequest = {
-  id: typeof SUB_SCREEN_SESSION;
-  context: SessionSubScreenContext;
-};
+export type ConfigSubScreenContext = Record<string, never>;
+
+export type OpenSubScreenRequest =
+  | {
+      id: typeof SUB_SCREEN_SESSION;
+      context: SessionSubScreenContext;
+    }
+  | {
+      id: typeof SUB_SCREEN_CONFIG;
+      context: ConfigSubScreenContext;
+    };

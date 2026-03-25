@@ -13,7 +13,7 @@ import React from "react";
 import { program } from "commander";
 import { createAgent } from "../agent.js";
 import { createOpenAIClient } from "../llm/index.js";
-import { loadConfig, getConfigPath } from "../config.js";
+import { loadConfig, getConfigPath, type ToolCallMode } from "../config.js";
 import { runBoardingWizard } from "./boarding-wizard.js";
 import type { RunOptions } from "../agent.js";
 import type { Message } from "../types.js";
@@ -107,8 +107,15 @@ async function runInteractive(resumeSessionId?: string) {
     extraTools: mcp.extraTools,
   });
 
-  const runAgent = (input: string, options?: RunOptions) =>
-    agent.run(input, { ...options, model: loadConfig().MODEL ?? options?.model });
+  const runAgent = (input: string, options?: RunOptions) => {
+    const cfg = loadConfig();
+    const toolCallMode: ToolCallMode = options?.toolCallMode ?? cfg.TOOL_CALL_MODE ?? "standard";
+    return agent.run(input, {
+      ...options,
+      model: cfg.MODEL ?? options?.model,
+      toolCallMode,
+    });
+  };
 
   const summarizeThread = (
     messages: Message[],

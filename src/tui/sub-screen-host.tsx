@@ -5,8 +5,13 @@
 
 import React from "react";
 import type { Session } from "../session-store.js";
-import { SUB_SCREEN_SESSION, type OpenSubScreenRequest } from "./sub-screen-types.js";
+import {
+  SUB_SCREEN_SESSION,
+  SUB_SCREEN_CONFIG,
+  type OpenSubScreenRequest,
+} from "./sub-screen-types.js";
 import { SessionManagerScreen } from "./session-manager-screen.js";
+import { ConfigScreen } from "./config-screen.js";
 
 export type SubScreenHostProps = {
   request: OpenSubScreenRequest;
@@ -30,6 +35,9 @@ export function SubScreenHost({
         onCurrentSessionRename={onCurrentSessionRename}
       />
     );
+  }
+  if (request.id === SUB_SCREEN_CONFIG) {
+    return <ConfigScreen onClose={onClose} />;
   }
   return null;
 }
