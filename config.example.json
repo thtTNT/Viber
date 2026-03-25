@@ -1,0 +1,14 @@
+{
+  "API_KEY": "your-api-key-here",
+  "BASE_URL": "https://api.openai.com/v1",
+  "MODEL": "gpt-4o-mini"
+}
+
+// Note: This is an example config file.
+// For interactive setup, run `viber` and use:
+//   /boarding  - Interactive setup wizard
+//   /set api-key <key>     - Set API key
+//   /set base-url <url>    - Set base URL (optional)
+//   /set model <name>      - Set model name
+//
+// Config file location: ~/.viber/config.json
