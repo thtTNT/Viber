@@ -69,68 +69,12 @@ npm run build
 npm start
 ```
 
-## 配置
+## 快速开始
 
-### 1）用户级配置文件（推荐）
-
-Viber 默认读取：`~/.viber/config.json`
-
-```json
-{
-  "API_KEY": "sk-your-key",
-  "BASE_URL": "https://api.openai.com/v1",
-  "MODEL": "gpt-4o-mini"
-}
-```
-
-| 配置项 | 说明 | 必填 |
-| --- | --- | --- |
-| `API_KEY` | 模型服务 API Key | 是 |
-| `BASE_URL` | OpenAI 兼容接口地址 | 否 |
-| `MODEL` | 默认模型名 | 否 |
-
-例如使用 OpenRouter：
-
-```json
-{
-  "API_KEY": "your-key",
-  "BASE_URL": "https://openrouter.ai/api/v1",
-  "MODEL": "openai/gpt-4o-mini"
-}
-```
-
-例如使用本地兼容服务：
-
-```json
-{
-  "API_KEY": "not-needed",
-  "BASE_URL": "http://localhost:11434/v1",
-  "MODEL": "llama2"
-}
-```
-
-### 2）环境变量回退
-
-如果配置文件没有设置，Viber 会回退读取环境变量：
+首次使用请运行 **Boarding** 交互向导，按提示填写并写入 `~/.viber/config.json`（API Key、Base URL、模型等）：
 
 ```bash
-export OPENAI_API_KEY=sk-your-key
-export OPENAI_BASE_URL=https://your-gateway/v1
-export OPENAI_MODEL=gpt-4o-mini
-```
-
-也兼容：
-
-```bash
-export BASE_MODEL=gpt-4o-mini
-```
-
-### 3）引导配置
-
-可通过内置向导写入配置：
-
-```bash
-# 已全局安装时
+# 已全局安装
 viber --boarding
 
 # 从 npm 临时运行
@@ -139,6 +83,8 @@ npx viber-agent --boarding
 # 本仓库源码
 npm run boarding
 ```
+
+完成后在同一终端执行下面的命令即可进入 TUI。
 
 ## CLI 用法
 
@@ -374,5 +320,4 @@ npm run logs:pretty -- path/to/upstream.jsonl
 ## 备注
 
 - 当前主入口是 **交互式终端 UI**，不再是 README 旧版本里那种“直接传一条任务后退出”的主要模式
-- `.viber/config.json` 是 **工作区级 MCP 配置**，`~/.viber/config.json` 是 **用户级模型配置**
-- 如果你愿意，我还可以继续帮你补一个 **英文 README**，或者再加一段 **快速上手示例**
+- `.viber/config.json` 是 **工作区级 MCP 配置**；**用户级模型配置**由 Boarding 写入 `~/.viber/config.json`
