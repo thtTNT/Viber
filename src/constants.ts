@@ -66,7 +66,7 @@ export const UI_LABELS = {
 /**
  * Available commands in interactive mode.
  */
-export const UI_COMMANDS = '/status /help /session /config /summary /mcp /clear /quit';
+export const UI_COMMANDS = '/status /help /session /config /summary /rollback /mcp /clear /quit';
 
 /**
  * Appended to system prompt when TOOL_CALL_MODE is PTC.
@@ -93,6 +93,11 @@ export const UI_SYSTEM_MESSAGES = {
   /** After /summary: model context is only the compact summary below, not the prior transcript. */
   CONTEXT_REPLACED_BY_SUMMARY:
     "上下文已压缩：发往模型的历史已替换为下方摘要，此前的完整对话不再注入。",
+  /** After /rollback: shown with turn/message counts. */
+  ROLLBACK_SUCCESS: (turnsRemoved: number, messagesRemoved: number) =>
+    `已回溯 ${turnsRemoved} 轮对话，移除 ${messagesRemoved} 条消息。`,
+  /** When there is nothing to roll back. */
+  ROLLBACK_NOTHING: "没有可回溯的对话历史。",
 } as const;
 
 /**

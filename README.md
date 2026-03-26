@@ -140,13 +140,14 @@ npx tsx src/cli/cli.ts --version
 - `/model`：列出可用模型，或切换模型
 - `/context` / `/ctx`：查看最近一次 API usage 与当前对话规模
 - `/summary [额外说明]`：把当前对话压缩成摘要，并替换模型上下文
+- `/rollback [n]` / `/undo`：回溯到前 n 轮对话（默认 n=1），撤销最近的对话轮次
 - `/session`：打开会话管理器
 - `/export <session-id> [output-path]`：导出会话为 Markdown 或 JSON
 - `/mcp`：探测工作区 MCP 配置与连接状态
 - `/clear`：清空当前对话历史
 - `/quit`：退出程序
 
-界面提示里当前展示的是常用命令：`/status /help /session /summary /mcp /clear /quit`。
+界面提示里当前展示的是常用命令：`/status /help /session /config /summary /rollback /mcp /clear /quit`。
 
 ## 会话与日志
 

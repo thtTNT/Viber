@@ -8,6 +8,7 @@ import { formatApiUsageSection } from "./utils/context-stats.js";
 import {
   loadSession,
   exportSessionToMarkdown,
+  rollbackConversation,
   type LlmUsageSnapshot,
 } from "./session-store.js";
 import {
@@ -121,6 +122,12 @@ export interface CommandResult {
   openSubScreen?: OpenSubScreenRequest;
   /** Host runs a one-shot LLM summary of `context.messages` (TUI or CLI with resumed messages) */
   runSummary?: { hint?: string };
+  /**
+   * Roll back the conversation history to a previous state.
+   * `messages` is the truncated history; `turnsRemoved` and `removedCount` are
+   * provided for display purposes.
+   */
+  rollback?: { messages: Message[]; turnsRemoved: number; removedCount: number };
 }
 
 export interface CommandDefinition {
@@ -373,6 +380,42 @@ registerCommand({
       handled: true,
       output: "Conversation history cleared.",
       clearHistory: true,
+    };
+  },
+});
+
+// /rollback - Roll back conversation to a previous turn
+registerCommand({
+  name: "rollback",
+  description: "Roll back the last N turns of conversation (default: 1). Usage: /rollback [n]",
+  aliases: ["undo"],
+  handler: (_args, context) => {
+    const messages = context?.messages ?? [];
+    const turns = Math.max(1, parseInt(_args.trim() || "1", 10) || 1);
+
+    if (messages.length === 0) {
+      return {
+        handled: true,
+        output: "没有可回溯的对话历史。",
+      };
+    }
+
+    const result = rollbackConversation(messages, turns);
+
+    if (result.turnsRemoved === 0) {
+      return {
+        handled: true,
+        output: "没有可回溯的对话历史。",
+      };
+    }
+
+    return {
+      handled: true,
+      rollback: {
+        messages: result.messages,
+        turnsRemoved: result.turnsRemoved,
+        removedCount: result.removedCount,
+      },
     };
   },
 });

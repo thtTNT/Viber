@@ -29,6 +29,7 @@ import {
   formatSessionResumeBanner,
   appendSessionUsageEvents,
   lastUsageSnapshot,
+  truncateUsageHistoryToTranscriptLength,
   type Session,
   type LlmUsageEvent,
 } from "../session-store.js";
@@ -692,6 +693,52 @@ export function App({
               { lines: [clearMessage] }
             )
           ]);
+        }
+        if (result.rollback) {
+          const { messages: rolledBack, turnsRemoved, removedCount } = result.rollback;
+          const rollbackMessage = UI_SYSTEM_MESSAGES.ROLLBACK_SUCCESS(turnsRemoved, removedCount);
+          const truncatedHistory = truncateUsageHistoryToTranscriptLength(
+            llmUsageHistory,
+            rolledBack.length
+          );
+          setConversationHistory(rolledBack);
+          setLlmUsageHistory(truncatedHistory);
+          setStaticMountKey((k) => k + 1);
+          uiLogger.contentBlockAdded(ContentBlockType.SYSTEM_INFO, rollbackMessage);
+          setContentBlocks([
+            createContentBlock(
+              ContentBlockType.SYSTEM_INFO,
+              rollbackMessage,
+              { lines: [rollbackMessage] }
+            ),
+          ]);
+          // Persist the rolled-back state immediately
+          try {
+            const { loadConfig } = require("../config.js");
+            const config = loadConfig();
+            const label = sessionName?.trim();
+            const session: Session = {
+              id: sessionId,
+              createdAt: sessionCreatedAt,
+              updatedAt: new Date().toISOString(),
+              mode: sessionMode,
+              model: config.MODEL || process.env.OPENAI_MODEL || "unknown",
+              messages: rolledBack,
+              stepCount: sessionSteps,
+              finished: false,
+              cwd: process.cwd(),
+              ...(label ? { name: label } : {}),
+              ...(truncatedHistory.length > 0
+                ? { llmUsageHistory: truncatedHistory }
+                : {}),
+            };
+            saveSession(session);
+          } catch (err) {
+            console.error(
+              "Failed to save session after rollback:",
+              err instanceof Error ? err.message : String(err)
+            );
+          }
         }
         if (result.exit) {
           exit();

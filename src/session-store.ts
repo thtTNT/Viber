@@ -111,6 +111,46 @@ export function truncateUsageHistoryToTranscriptLength(
   );
 }
 
+/**
+ * Roll back the conversation history by removing the last `turns` user turns.
+ * Each "turn" consists of one user message plus all subsequent assistant / tool
+ * messages up to (but not including) the next user message.
+ *
+ * Returns the truncated messages array, the number of messages removed,
+ * and the number of turns actually removed (may be less than `turns` when
+ * the history is shorter).
+ */
+export function rollbackConversation(
+  messages: Message[],
+  turns: number = 1
+): { messages: Message[]; removedCount: number; turnsRemoved: number } {
+  if (turns <= 0 || messages.length === 0) {
+    return { messages, removedCount: 0, turnsRemoved: 0 };
+  }
+
+  // Collect indices of all user messages
+  const userIndices: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]!.role === "user") {
+      userIndices.push(i);
+    }
+  }
+
+  if (userIndices.length === 0) {
+    return { messages, removedCount: 0, turnsRemoved: 0 };
+  }
+
+  const turnsToRemove = Math.min(turns, userIndices.length);
+  const cutAtIndex = userIndices[userIndices.length - turnsToRemove]!;
+  const newMessages = messages.slice(0, cutAtIndex);
+
+  return {
+    messages: newMessages,
+    removedCount: messages.length - newMessages.length,
+    turnsRemoved: turnsToRemove,
+  };
+}
+
 function normalizeSessionLoaded(raw: Session): Session {
   let llmUsageHistory = raw.llmUsageHistory;
   if (!llmUsageHistory?.length && raw.lastLlmUsage) {
