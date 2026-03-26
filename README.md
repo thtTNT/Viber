@@ -23,17 +23,41 @@ Viber 是一个基于 **Node.js + TypeScript** 的 coding agent 框架与 CLI。
 
 ## 安装
 
+### 从 npm 安装（推荐）
+
+全局安装后，终端里可使用命令 **`viber`** 或 **`viber-agent`**（两者等价）：
+
 ```bash
-npm install
+npm install -g viber-agent
+viber
+# 或
+viber-agent
 ```
 
-开发运行：
+不全局安装、临时试用：
+
+```bash
+npx viber-agent
+```
+
+> npm 上已有名为 `viber` 的其他包，本项目的 **包名** 为 `viber-agent`；CLI 仍保留短命令 `viber`。
+
+### 从源码开发（本仓库）
+
+```bash
+git clone <你的仓库地址>
+cd Viber
+npm install
+npm run build
+```
+
+开发运行（无需先 build）：
 
 ```bash
 npm run dev
 ```
 
-构建：
+仅构建：
 
 ```bash
 npm run build
@@ -106,14 +130,27 @@ export BASE_MODEL=gpt-4o-mini
 可通过内置向导写入配置：
 
 ```bash
+# 已全局安装时
+viber --boarding
+
+# 从 npm 临时运行
+npx viber-agent --boarding
+
+# 本仓库源码
 npm run boarding
-# 或
-npx tsx src/cli/cli.ts --boarding
 ```
 
 ## CLI 用法
 
 默认启动 **交互式 TUI**：
+
+```bash
+viber
+# 或（未全局安装）
+npx viber-agent
+```
+
+本仓库开发时：
 
 ```bash
 npm run dev
@@ -122,13 +159,15 @@ npm run dev
 恢复之前的会话：
 
 ```bash
+viber --resume <session-id>
+# 源码开发时：
 npx tsx src/cli/cli.ts --resume <session-id>
 ```
 
 查看版本：
 
 ```bash
-npx tsx src/cli/cli.ts --version
+viber --version
 ```
 
 ## TUI 内置命令

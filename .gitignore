@@ -10,6 +10,7 @@ coverage/
 .viber-debug.log
 *.log
 *.tsbuildinfo
+*.tgz
 .DS_Store
 .vscode/
 .idea/

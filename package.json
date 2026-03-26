@@ -23,12 +23,14 @@
     }
   },
   "bin": {
-    "viber": "dist/cli/cli.js"
+    "viber": "dist/cli/cli.js",
+    "viber-agent": "dist/cli/cli.js"
   },
   "files": [
     "dist",
     "prompts",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc --pretty --diagnostics --listEmittedFiles",
