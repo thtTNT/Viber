@@ -111,6 +111,62 @@ export function truncateUsageHistoryToTranscriptLength(
   );
 }
 
+/** After each completed agent turn (or /summary), for rewind stepCount restoration. */
+export interface TurnCheckpoint {
+  messageCount: number;
+  stepCount: number;
+}
+
+export function pushTurnCheckpoint(
+  checkpoints: TurnCheckpoint[] | undefined,
+  messageCount: number,
+  stepCount: number
+): TurnCheckpoint[] {
+  const prev = checkpoints ?? [];
+  const last = prev[prev.length - 1];
+  if (
+    last &&
+    last.messageCount === messageCount &&
+    last.stepCount === stepCount
+  ) {
+    return prev;
+  }
+  return [...prev, { messageCount, stepCount }];
+}
+
+export function truncateTurnCheckpointsToMessageLength(
+  checkpoints: TurnCheckpoint[] | undefined,
+  maxMessageCount: number
+): TurnCheckpoint[] {
+  if (!checkpoints?.length) return [];
+  return checkpoints.filter((c) => c.messageCount <= maxMessageCount);
+}
+
+/**
+ * Step count after rewinding to `messageCount` messages: prefer checkpoints,
+ * else count agent completions left in usage history (post-truncation).
+ */
+export function resolveStepCountForRewind(
+  checkpoints: TurnCheckpoint[] | undefined,
+  messageCount: number,
+  truncatedUsageHistory: LlmUsageEvent[]
+): number {
+  if (checkpoints?.length) {
+    let best: TurnCheckpoint | undefined;
+    for (const c of checkpoints) {
+      if (c.messageCount <= messageCount) {
+        if (!best || c.messageCount > best.messageCount) {
+          best = c;
+        }
+      }
+    }
+    if (best !== undefined) {
+      return best.stepCount;
+    }
+  }
+  return truncatedUsageHistory.filter((e) => e.source === "agent").length;
+}
+
 function normalizeSessionLoaded(raw: Session): Session {
   let llmUsageHistory = raw.llmUsageHistory;
   if (!llmUsageHistory?.length && raw.lastLlmUsage) {
@@ -150,6 +206,8 @@ export interface Session {
   llmUsageHistory?: LlmUsageEvent[];
   /** Last completion usage (redundant with last history entry; kept for older readers). */
   lastLlmUsage?: LlmUsageSnapshot;
+  /** Monotonic checkpoints for /rewind stepCount (optional; older sessions omit). */
+  turnCheckpoints?: TurnCheckpoint[];
 }
 
 export interface SessionSummary {
@@ -260,6 +318,32 @@ export function getSessionPath(id: string, cwd: string): string {
 }
 
 /**
+ * Create `<id>.json` with an empty transcript if the file is absent.
+ * Called at interactive CLI startup so the session appears in the list and can be renamed before the first turn.
+ */
+export function ensureEmptySessionFile(
+  id: string,
+  cwd: string,
+  opts: { model: string; createdAt: string }
+): void {
+  if (existsSync(getSessionPath(id, cwd))) {
+    return;
+  }
+  const { createdAt, model } = opts;
+  saveSession({
+    id,
+    createdAt,
+    updatedAt: createdAt,
+    mode: "interactive",
+    model,
+    messages: [],
+    stepCount: 0,
+    finished: false,
+    cwd,
+  });
+}
+
+/**
  * Save a session to `<session.cwd>/.viber/sessions/`.
  */
 export function saveSession(session: Session): void {
@@ -350,42 +434,15 @@ export function getLatestSession(cwd: string): SessionSummary | null {
   return sessions.length > 0 ? sessions[0] : null;
 }
 
-export interface RenameSessionOptions {
-  /**
-   * When true and no file exists yet, create a minimal session (e.g. user set a name
-   * before the first completed save). Only safe for the currently active session id.
-   */
-  createIfMissing?: boolean;
-}
-
 /**
  * Set or clear the display name of a session. The id and on-disk JSON filename are unchanged.
  * Pass an empty string to remove the name.
  * `cwd` scopes load lookup; writes go to `session.cwd` via saveSession.
  */
-export function renameSession(
-  id: string,
-  name: string,
-  cwd: string,
-  options?: RenameSessionOptions
-): boolean {
-  let session = loadSession(id, cwd);
+export function renameSession(id: string, name: string, cwd: string): boolean {
+  const session = loadSession(id, cwd);
   if (!session) {
-    if (!options?.createIfMissing) {
-      return false;
-    }
-    const now = new Date().toISOString();
-    session = {
-      id,
-      createdAt: now,
-      updatedAt: now,
-      mode: "interactive",
-      model: "unknown",
-      messages: [],
-      stepCount: 0,
-      finished: false,
-      cwd,
-    };
+    return false;
   }
 
   const trimmed = name.trim();

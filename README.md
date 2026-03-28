@@ -128,10 +128,13 @@ viber --version
 - `/session`：打开会话管理器
 - `/export <session-id> [output-path]`：导出会话为 Markdown 或 JSON
 - `/mcp`：探测工作区 MCP 配置与连接状态
+- `/rewind [n]`（`/rw`）：回退最近 `n` 轮用户消息（默认 1），同步模型上下文与用量记录；**不会**撤销工具已写入工作区的文件
 - `/clear`：清空当前对话历史
 - `/quit`：退出程序
 
-界面提示里当前展示的是常用命令：`/status /help /session /summary /mcp /clear /quit`。
+界面提示里当前展示的是常用命令：`/status /help /session /summary /mcp /rewind /clear /quit`。
+
+恢复会话（`viber -r <id>` 或会话管理器）时，界面会从持久化的消息**完整重放**用户句、助手回复与工具调用（不含历史流式思考原文，与当时终端里的逐 token 展示可能略有差别）。
 
 ## 会话与日志
 
@@ -150,6 +153,7 @@ viber --version
 - 当前模型
 - 会话名称
 - LLM usage 历史
+- `turnCheckpoints`（可选）：用于 `/rewind` 后恢复准确的 step 计数
 
 ### 审计日志
 
@@ -295,6 +299,7 @@ console.log("Steps:", result.steps, "Finished:", result.finished);
 ## 项目结构
 
 ```text
+tests/                    # 自动化单元测试（npm test）
 src/
   agent.ts                # Agent 主循环
   commands.ts             # Slash commands
@@ -312,6 +317,7 @@ src/
 ```bash
 npm run dev
 npm run build
+npm run test   # 自动化用例（`tests/*.test.ts`）；脚本内带 VIBER_LOG_LEVEL=silent 以免刷屏
 npm run boarding
 npm run test:cli
 npm run logs:pretty -- path/to/upstream.jsonl

@@ -129,7 +129,7 @@ export function SessionManagerScreen({
       return;
     }
     const name = renameBuffer.trim();
-    const ok = renameSession(id, name, workspaceCwd, { createIfMissing: true });
+    const ok = renameSession(id, name, workspaceCwd);
     if (!ok) {
       showToast("重命名失败");
       setMode({ type: "list" });

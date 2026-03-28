@@ -22,16 +22,36 @@ import {
   UI_ERROR_PREFIX,
   UI_STATUS_VIBING,
 } from "../constants.js";
-import { isCommand, processCommand, getAvailableCommands } from "../commands.js";
+import {
+  isCommand,
+  processCommand,
+  getAvailableCommands,
+  buildRewindResult,
+  type CommandResult,
+} from "../commands.js";
+import {
+  findUserMessageIndices,
+  sliceToBeforeUserTurnIndex,
+} from "../rewind-transcript.js";
 import { renderTuiMd } from "./tui-md.js";
 import {
   saveSession,
   formatSessionResumeBanner,
   appendSessionUsageEvents,
   lastUsageSnapshot,
+  pushTurnCheckpoint,
   type Session,
   type LlmUsageEvent,
+  type TurnCheckpoint,
 } from "../session-store.js";
+import { messagesToContentBlocks } from "./messages-to-content-blocks.js";
+import {
+  ContentBlockType,
+  createContentBlock,
+  addContentBlock,
+  type ContentBlock,
+} from "./content-blocks-model.js";
+import { renderUserBlock, stringDisplayWidth } from "./user-block-render.js";
 import { SubScreenHost } from "../tui/sub-screen-host.js";
 import type { OpenSubScreenRequest } from "../tui/sub-screen-types.js";
 import { getConversationId } from "../agent-log.js";
@@ -39,95 +59,23 @@ import { formatLlmApiError } from "../format-llm-error.js";
 import type { RunConversationSummaryResult } from "../conversation-summary.js";
 
 // -------- UI helpers (width, box, status bar) --------
-const BOX_WIDTH = Math.max(40, process.stdout.columns || 72);
-const CONTENT_WIDTH = BOX_WIDTH - 4;
 const WIDTH = Math.max(40, process.stdout.columns || 72);
 const ANSI = {
   reset: "\x1b[0m",
-  userBg: "\x1b[48;5;236m\x1b[37m",
   border: "\x1b[38;5;245m",
   dim: "\x1b[38;5;245m",
 } as const;
 
-function charWidth(c: string): number {
-  if (c.length === 0) return 0;
-  const code = c.codePointAt(0)!;
-  if (code >= 0x4e00 && code <= 0x9fff) return 2;
-  if (code >= 0x3000 && code <= 0x303f) return 2;
-  if (code >= 0xff00 && code <= 0xffef) return 2;
-  if (code >= 0xac00 && code <= 0xd7af) return 2;
-  return 1;
-}
-
-function totalWidth(s: string): number {
-  let w = 0;
-  for (const c of Array.from(s)) w += charWidth(c);
-  return w;
-}
-
-function truncateToWidth(s: string, maxCols: number = CONTENT_WIDTH): string {
-  const arr = Array.from(s);
-  let w = 0, i = 0;
-  for (; i < arr.length && w + charWidth(arr[i]!) <= maxCols - 1; i++) w += charWidth(arr[i]!);
-  if (i >= arr.length) return s;
-  return arr.slice(0, i).join("") + "…";
-}
-
-function padToWidth(s: string, maxCols: number): string {
-  return s + " ".repeat(Math.max(0, maxCols - totalWidth(s)));
-}
-
-function renderUserBlock(input: string): string {
-  const lines = input.split(/\r?\n/);
-  let out = "";
-  for (const line of lines) {
-    const c = truncateToWidth(line, CONTENT_WIDTH - 2);
-    const padded = padToWidth("> " + c, CONTENT_WIDTH);
-    out += ANSI.userBg + padded + "  " + ANSI.reset + "\n";
-  }
-  return out;
-}
-
 function renderStatusBar(text: string): string {
   const visible = text.replace(/\x1b\[[0-9;]*m/g, "");
-  const pad = " ".repeat(Math.max(0, WIDTH - totalWidth(visible)));
+  const pad = " ".repeat(Math.max(0, WIDTH - stringDisplayWidth(visible)));
   if (!text) {
     return ANSI.dim + pad + ANSI.reset + "\n";
   }
   return ANSI.dim + text + pad + ANSI.reset + "\n";
 }
 
-// -------- Content Block Management --------
-enum ContentBlockType {
-  USER_INPUT = "user_input",
-  THINKING = "thinking",
-  RESPONSE = "response",
-  TOOL_CALL = "tool_call",
-  ASSISTANT = "assistant",
-  ERROR = "error",
-  SYSTEM_INFO = "system_info",
-}
-
-interface ContentBlock {
-  type: ContentBlockType;
-  content: string;
-  data?: {
-    name?: string;
-    args?: string;
-    lines?: string[];
-    /** Agent loop step for this RESPONSE; same step coalesces into one visible block. */
-    step?: number;
-  };
-}
-
-function createContentBlock(type: ContentBlockType, content: string, data?: ContentBlock["data"]): ContentBlock {
-  return { type, content, data };
-}
-
-function addContentBlock(blocks: ContentBlock[], type: ContentBlockType, content: string, data?: ContentBlock["data"]): ContentBlock[] {
-  const block = createContentBlock(type, content, data);
-  return [...blocks, block];
-}
+// -------- Content Block Management (types + factories in content-blocks-model) --------
 
 /** Last block that is not a trailing tool line (assistant text is often followed by tool rows). */
 function lastBlockIgnoringTrailingToolCalls(blocks: ContentBlock[]): ContentBlock | undefined {
@@ -269,6 +217,7 @@ function InputBox({
   onSubmit,
   focus,
   autocomplete,
+  textInputKey,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -276,6 +225,8 @@ function InputBox({
   focus: boolean;
   autocomplete: string;
   onTab: () => void;
+  /** Bump when recalling ↑↓ history so ink-text-input remounts with cursor at end of line. */
+  textInputKey: number;
 }) {
   return (
     <Box
@@ -289,6 +240,7 @@ function InputBox({
     >
       <Box>
         <TextInput
+          key={textInputKey}
           value={value}
           onChange={onChange}
           onSubmit={onSubmit}
@@ -311,6 +263,7 @@ function Toolbar({
   onSubmit,
   autocomplete,
   onTab,
+  textInputKey,
 }: {
   isVibing: boolean;
   inputBuffer: string;
@@ -318,6 +271,7 @@ function Toolbar({
   onSubmit: (v: string) => void;
   autocomplete: string;
   onTab: () => void;
+  textInputKey: number;
 }) {
   return (
     <Box flexDirection="column">
@@ -329,6 +283,7 @@ function Toolbar({
         focus={true}
         autocomplete={autocomplete}
         onTab={onTab}
+        textInputKey={textInputKey}
       />
     </Box>
   );
@@ -348,6 +303,11 @@ export interface InkAppProps {
   initialSessionName?: string;
   /** Persisted LLM usage log from resumed session */
   initialLlmUsageHistory?: LlmUsageEvent[];
+  /** When resuming from CLI, banner line(s) from `formatSessionResumeBanner(session)` */
+  initialResumeBanner?: string;
+  initialSessionCreatedAt?: string;
+  initialSessionSteps?: number;
+  initialTurnCheckpoints?: TurnCheckpoint[];
 }
 
 export function App({
@@ -357,9 +317,26 @@ export function App({
   initialMessages: propInitialMessages,
   initialSessionName,
   initialLlmUsageHistory,
+  initialResumeBanner,
+  initialSessionCreatedAt,
+  initialSessionSteps,
+  initialTurnCheckpoints,
 }: InkAppProps) {
   const { exit } = useApp();
   const [contentBlocks, setContentBlocks] = useState<ContentBlock[]>(() => {
+    if (propInitialMessages?.length) {
+      const replay = messagesToContentBlocks(propInitialMessages);
+      const banner = initialResumeBanner?.trim();
+      if (banner) {
+        return [
+          createContentBlock(ContentBlockType.SYSTEM_INFO, banner, {
+            lines: banner.split("\n").filter(Boolean),
+          }),
+          ...replay,
+        ];
+      }
+      return replay;
+    }
     const c = "\x1b[0m";
     const b = "\x1b[1m";
     const dim = "\x1b[2m";
@@ -411,6 +388,8 @@ export function App({
     )];
   });
   const [inputBuffer, setInputBuffer] = useState("");
+  /** Increment on ↑↓ history recall so TextInput remounts with cursor at end of line. */
+  const [textInputRemountKey, setTextInputRemountKey] = useState(0);
   const [isVibing, setVibing] = useState(false);
   const [conversationHistory, setConversationHistory] = useState<Message[]>(() => propInitialMessages || []);
   const [autocomplete, setAutocomplete] = useState("");
@@ -434,10 +413,15 @@ export function App({
   /** Session mode */
   const [sessionMode] = useState<"interactive" | "single">("interactive");
   /** Total steps in current session */
-  const [sessionSteps, setSessionSteps] = useState(0);
+  const [sessionSteps, setSessionSteps] = useState(
+    () => initialSessionSteps ?? 0
+  );
   /** Append-only LLM usage log (persisted; supports future rollback) */
   const [llmUsageHistory, setLlmUsageHistory] = useState<LlmUsageEvent[]>(
     () => initialLlmUsageHistory ?? []
+  );
+  const [turnCheckpoints, setTurnCheckpoints] = useState<TurnCheckpoint[]>(
+    () => initialTurnCheckpoints ?? []
   );
   /**
    * Latest session fields for unmount save — avoids stale closure from `useEffect([], ...)`
@@ -451,22 +435,29 @@ export function App({
     sessionSteps: number;
     sessionName?: string;
     llmUsageHistory: LlmUsageEvent[];
+    turnCheckpoints: TurnCheckpoint[];
   }>({
     conversationHistory: propInitialMessages || [],
     sessionId: propSessionId || "",
     sessionCreatedAt: new Date().toISOString(),
     sessionMode: "interactive",
-    sessionSteps: 0,
+    sessionSteps: initialSessionSteps ?? 0,
     sessionName: undefined,
     llmUsageHistory: initialLlmUsageHistory ?? [],
+    turnCheckpoints: initialTurnCheckpoints ?? [],
   });
   /** Session created timestamp (CLI `--resume` / TUI 会话管理恢复) */
   const [sessionCreatedAt, setSessionCreatedAt] = useState<string>(() => {
+    if (initialSessionCreatedAt) {
+      return initialSessionCreatedAt;
+    }
     if (propInitialMessages && propInitialMessages.length > 0) {
-      // If resuming, try to parse from session ID or use current time
       const ts = propSessionId?.split("-").slice(0, 6).join("-");
       if (ts) {
-        return ts.replace(/(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/, "$1-$2-$3T$4:$5:$6Z");
+        return ts.replace(
+          /(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/,
+          "$1-$2-$3T$4:$5:$6Z"
+        );
       }
     }
     return new Date().toISOString();
@@ -480,6 +471,7 @@ export function App({
     sessionSteps,
     sessionName,
     llmUsageHistory,
+    turnCheckpoints,
   };
 
   // Calculate autocomplete suggestion when typing "/"
@@ -512,14 +504,88 @@ export function App({
     setSessionSteps(s.stepCount);
     setSessionCreatedAt(s.createdAt);
     setLlmUsageHistory(s.llmUsageHistory ?? []);
+    setTurnCheckpoints(s.turnCheckpoints ?? []);
     setConversationHistory(s.messages);
     setStaticMountKey((k) => k + 1);
     const banner = formatSessionResumeBanner(s);
     uiLogger.contentBlockAdded(ContentBlockType.SYSTEM_INFO, banner);
+    const replay = messagesToContentBlocks(s.messages);
     setContentBlocks([
       createContentBlock(ContentBlockType.SYSTEM_INFO, banner, { lines: [banner] }),
+      ...replay,
     ]);
   }, []);
+
+  const applyRewindResult = useCallback(
+    (note: string, r: NonNullable<CommandResult["rewind"]>) => {
+      setConversationHistory(r.messages);
+      setLlmUsageHistory(r.llmUsageHistory);
+      setSessionSteps(r.stepCount);
+      setTurnCheckpoints(r.turnCheckpoints);
+      setStaticMountKey((k) => k + 1);
+      setContentBlocks([
+        createContentBlock(ContentBlockType.SYSTEM_INFO, note, {
+          lines: note.split("\n").filter(Boolean),
+        }),
+        ...messagesToContentBlocks(r.messages),
+      ]);
+      uiLogger.contentBlockAdded(ContentBlockType.SYSTEM_INFO, note);
+      try {
+        const { loadConfig } = require("../config.js");
+        const config = loadConfig();
+        const label = sessionName?.trim();
+        const session: Session = {
+          id: sessionId,
+          createdAt: sessionCreatedAt,
+          updatedAt: new Date().toISOString(),
+          mode: sessionMode,
+          model: config.MODEL || process.env.OPENAI_MODEL || "unknown",
+          messages: r.messages,
+          stepCount: r.stepCount,
+          finished: true,
+          cwd: process.cwd(),
+          ...(label ? { name: label } : {}),
+          ...(r.llmUsageHistory.length > 0
+            ? { llmUsageHistory: r.llmUsageHistory }
+            : {}),
+          ...(r.turnCheckpoints.length > 0
+            ? { turnCheckpoints: r.turnCheckpoints }
+            : {}),
+        };
+        saveSession(session);
+      } catch (err) {
+        console.error(
+          "Failed to save session:",
+          err instanceof Error ? err.message : String(err)
+        );
+      }
+    },
+    [sessionCreatedAt, sessionId, sessionMode, sessionName]
+  );
+
+  const handleRewindPick = useCallback(
+    (userTurnIndexFromStart: number) => {
+      setSubScreen(null);
+      const newMessages = sliceToBeforeUserTurnIndex(
+        conversationHistory,
+        userTurnIndexFromStart
+      );
+      const userIdx = findUserMessageIndices(conversationHistory);
+      const n = userIdx.length - userTurnIndexFromStart;
+      const built = buildRewindResult(conversationHistory, newMessages, n, {
+        llmUsageHistory,
+        turnCheckpoints,
+      });
+      if (!built?.rewind) return;
+      applyRewindResult(built.output ?? "", built.rewind);
+    },
+    [
+      applyRewindResult,
+      conversationHistory,
+      llmUsageHistory,
+      turnCheckpoints,
+    ]
+  );
 
   const lastBlock = contentBlocks[contentBlocks.length - 1];
   const liveThinking =
@@ -549,12 +615,33 @@ export function App({
 
       // Check if input is a command
       if (isCommand(input)) {
+        const cmdHead = input.slice(1).trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+        if (
+          isVibing &&
+          (cmdHead === "rewind" || cmdHead === "rw")
+        ) {
+          uiLogger.contentBlockAdded(
+            ContentBlockType.SYSTEM_INFO,
+            UI_SYSTEM_MESSAGES.REWIND_WHILE_VIBING
+          );
+          setContentBlocks((prev) =>
+            addContentBlock(
+              prev,
+              ContentBlockType.SYSTEM_INFO,
+              UI_SYSTEM_MESSAGES.REWIND_WHILE_VIBING
+            )
+          );
+          setInputBuffer("");
+          return;
+        }
         const result = await processCommand(input.slice(1), {
           messages: conversationHistory,
           cwd: process.cwd(),
           sessionId,
           sessionName,
           lastLlmUsage: lastUsageSnapshot(llmUsageHistory),
+          llmUsageHistory,
+          turnCheckpoints,
         });
         if (result.openSubScreen) {
           setSubScreen(result.openSubScreen);
@@ -566,6 +653,11 @@ export function App({
           result.sessionNameUpdate.forSessionId === sessionId
         ) {
           setSessionName(result.sessionNameUpdate.name);
+        }
+        if (result.rewind) {
+          applyRewindResult(result.output ?? "", result.rewind);
+          setInputBuffer("");
+          return;
         }
         if (result.runSummary) {
           setInputBuffer("");
@@ -628,6 +720,16 @@ export function App({
               sum.llmUsageEvents
             );
             setLlmUsageHistory(mergedSummaryHistory);
+            const summaryCp = text
+              ? pushTurnCheckpoint(
+                  [],
+                  nextHistoryForSave.length,
+                  sessionSteps + 1
+                )
+              : turnCheckpoints;
+            if (text) {
+              setTurnCheckpoints(summaryCp);
+            }
             try {
               const { loadConfig } = require("../config.js");
               const config = loadConfig();
@@ -646,6 +748,7 @@ export function App({
                 ...(mergedSummaryHistory.length > 0
                   ? { llmUsageHistory: mergedSummaryHistory }
                   : {}),
+                ...(summaryCp.length > 0 ? { turnCheckpoints: summaryCp } : {}),
               };
               saveSession(session);
             } catch (err) {
@@ -683,6 +786,7 @@ export function App({
         if (result.clearHistory) {
           setConversationHistory([]);
           setLlmUsageHistory([]);
+          setTurnCheckpoints([]);
           const clearMessage = result.output || "Conversation history cleared.";
           setStaticMountKey((k) => k + 1);
           setContentBlocks([
@@ -810,8 +914,12 @@ export function App({
           uiLogger.contentBlockAdded(ContentBlockType.SYSTEM_INFO, UI_SYSTEM_MESSAGES.RUN_FINISHED_NO_MESSAGE);
           setContentBlocks(prev => addContentBlock(prev, ContentBlockType.SYSTEM_INFO, UI_SYSTEM_MESSAGES.RUN_FINISHED_NO_MESSAGE));
         }
-        setConversationHistory(result.messages.slice(1));
-        setSessionSteps(prev => prev + result.steps);
+        const nextMsgs = result.messages.slice(1);
+        const nextSteps = sessionSteps + result.steps;
+        const nextCp = pushTurnCheckpoint(turnCheckpoints, nextMsgs.length, nextSteps);
+        setConversationHistory(nextMsgs);
+        setSessionSteps(nextSteps);
+        setTurnCheckpoints(nextCp);
         const mergedRunHistory = appendSessionUsageEvents(
           llmUsageHistory,
           result.llmUsageEvents
@@ -830,14 +938,15 @@ export function App({
             updatedAt: new Date().toISOString(),
             mode: sessionMode,
             model: config.MODEL || process.env.OPENAI_MODEL || "unknown",
-            messages: result.messages.slice(1),
-            stepCount: sessionSteps + result.steps,
+            messages: nextMsgs,
+            stepCount: nextSteps,
             finished: result.finished,
             cwd: process.cwd(),
             ...(label ? { name: label } : {}),
             ...(mergedRunHistory.length > 0
               ? { llmUsageHistory: mergedRunHistory }
               : {}),
+            ...(nextCp.length > 0 ? { turnCheckpoints: nextCp } : {}),
           };
           saveSession(session);
         } catch (err) {
@@ -860,6 +969,7 @@ export function App({
       }
     },
     [
+      applyRewindResult,
       conversationHistory,
       runAgent,
       summarizeThread,
@@ -870,6 +980,7 @@ export function App({
       sessionMode,
       sessionSteps,
       llmUsageHistory,
+      turnCheckpoints,
     ]
   );
 
@@ -885,6 +996,7 @@ export function App({
         sessionSteps: steps,
         sessionName: name,
         llmUsageHistory: exitHistory,
+        turnCheckpoints: exitCp,
       } = exitSaveRef.current;
       if (messages.length > 0) {
         try {
@@ -903,6 +1015,7 @@ export function App({
             cwd: process.cwd(),
             ...(label ? { name: label } : {}),
             ...(exitHistory.length > 0 ? { llmUsageHistory: exitHistory } : {}),
+            ...(exitCp.length > 0 ? { turnCheckpoints: exitCp } : {}),
           };
           saveSession(session);
         } catch (err) {
@@ -915,6 +1028,13 @@ export function App({
   useInput(
     (input, key) => {
       if (key.ctrl && input === "c") {
+        if (inputBuffer.length > 0) {
+          setInputBuffer("");
+          setAutocomplete("");
+          historyBrowseIdxRef.current = null;
+          setTextInputRemountKey((k) => k + 1);
+          return;
+        }
         exit();
         return;
       }
@@ -931,11 +1051,13 @@ export function App({
           historyDraftRef.current = inputBuffer;
           historyBrowseIdxRef.current = hist.length - 1;
           setInputBuffer(hist[hist.length - 1]!);
+          setTextInputRemountKey((k) => k + 1);
         } else {
           const idx = historyBrowseIdxRef.current;
           if (idx > 0) {
             historyBrowseIdxRef.current = idx - 1;
             setInputBuffer(hist[idx - 1]!);
+            setTextInputRemountKey((k) => k + 1);
           }
         }
         setAutocomplete("");
@@ -948,9 +1070,11 @@ export function App({
         if (idx < hist.length - 1) {
           historyBrowseIdxRef.current = idx + 1;
           setInputBuffer(hist[idx + 1]!);
+          setTextInputRemountKey((k) => k + 1);
         } else {
           historyBrowseIdxRef.current = null;
           setInputBuffer(historyDraftRef.current);
+          setTextInputRemountKey((k) => k + 1);
         }
         setAutocomplete("");
         return;
@@ -974,6 +1098,7 @@ export function App({
           onClose={() => setSubScreen(null)}
           onResume={applySessionResume}
           onCurrentSessionRename={(name) => setSessionName(name)}
+          onRewindToUserTurn={handleRewindPick}
         />
       ) : (
         <>
@@ -991,6 +1116,7 @@ export function App({
             onSubmit={submit}
             autocomplete={autocomplete}
             onTab={handleTab}
+            textInputKey={textInputRemountKey}
           />
         </>
       )}

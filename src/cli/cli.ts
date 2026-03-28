@@ -3,7 +3,7 @@
  * CLI: interactive chat (Ink TUI).
  * Usage:
  *   viber
- *   viber -r <session-id>
+ *   viber -r [session-id]   # omit id → latest session in cwd
  *   viber --boarding
  * Ctrl+T: toggle thinking process.
  */
@@ -22,13 +22,32 @@ import { App } from "./ink-app.js";
 import * as debugLog from "./debug-log.js";
 import { CLI_BYE_MESSAGE } from "../constants.js";
 import { startNewConversation, setInkUiLoggingMode } from "../agent-log.js";
-import { loadSession, type LlmUsageEvent } from "../session-store.js";
+import {
+  loadSession,
+  formatSessionResumeBanner,
+  ensureEmptySessionFile,
+  getLatestSession,
+  type LlmUsageEvent,
+  type TurnCheckpoint,
+} from "../session-store.js";
 import { formatLlmApiError } from "../format-llm-error.js";
 import { createMcpSession, emptyMcpSession } from "../mcp/session.js";
 import { runConversationSummary } from "../conversation-summary.js";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../../package.json") as { version: string };
+
+/** One startup banner line (TTY is cleared before Ink draws the main UI). */
+function writeStartupLine(line: string): void {
+  console.log(line);
+}
+
+/** Clear viewport and scrollback so boot logs disappear before the TUI. */
+function clearTerminalForInk(): void {
+  if (process.stdout.isTTY) {
+    process.stdout.write("\x1b[3J\x1b[2J\x1b[H");
+  }
+}
 
 function hasResolvedApiKey(config: ReturnType<typeof loadConfig>): boolean {
   return Boolean(config.API_KEY || process.env.OPENAI_API_KEY);
@@ -51,6 +70,26 @@ function exitWithSetupGuide(): never {
   process.exit(1);
 }
 
+/** Resolve `--resume` / `-r`: explicit id, or latest session in workspace when flag has no value. */
+function resolveResumeSessionId(
+  resume: string | boolean | undefined,
+  cwd: string
+): string | undefined {
+  if (resume === undefined) return undefined;
+  const trimmed = typeof resume === "string" ? resume.trim() : "";
+  if (resume === true || trimmed === "") {
+    const latest = getLatestSession(cwd);
+    if (!latest) {
+      console.error(
+        "[viber] 当前目录下没有已保存的会话。直接运行 `viber` 开新会话，或使用 `viber --resume <session-id>`。"
+      );
+      process.exit(1);
+    }
+    return latest.id;
+  }
+  return trimmed;
+}
+
 async function runInteractive(resumeSessionId?: string) {
   const config = loadConfig();
   if (!hasResolvedApiKey(config)) {
@@ -61,20 +100,23 @@ async function runInteractive(resumeSessionId?: string) {
   const ctx = startNewConversation();
   const sessionId = resumeSessionId || `${ctx.timestamp}-${ctx.uuid}`;
 
-  console.log(`📝 LLM audit (readable): ${ctx.logPath}`);
-  console.log(`📝 LLM NDJSON (jq):     ${ctx.jsonlPath}`);
-  console.log(`🆔 Conversation ID: ${sessionId}`);
+  writeStartupLine(`[viber] llm audit (readable): ${ctx.logPath}`);
+  writeStartupLine(`[viber] llm audit (ndjson): ${ctx.jsonlPath}`);
+  writeStartupLine(`[viber] conversation id: ${sessionId}`);
 
   const cwdEarly = process.cwd();
   if (resumeSessionId) {
     const session = loadSession(resumeSessionId, cwdEarly);
     if (session) {
-      console.log(`📖 Resumed session: ${sessionId} (${session.messages.length} messages, ${session.stepCount} steps)`);
+      writeStartupLine(
+        `[viber] session: resumed ${sessionId} (${session.messages.length} messages, ${session.stepCount} steps)`
+      );
     } else {
-      console.warn(`⚠️  Session not found: ${resumeSessionId}, starting fresh`);
+      writeStartupLine(
+        `[viber] session: not found (${resumeSessionId}), empty transcript for this id`
+      );
     }
   }
-  console.log();
 
   const llm = createOpenAIClient({
     apiKey: config.API_KEY,
@@ -87,13 +129,16 @@ async function runInteractive(resumeSessionId?: string) {
     mcp = await createMcpSession(
       cwd,
       (serverId, err) => {
-        console.warn(`[viber] MCP server "${serverId}" failed: ${err.message}`);
+        writeStartupLine(
+          `[viber] mcp: server "${serverId}" failed: ${err.message}`
+        );
       },
-      ctx.logDir
+      ctx.logDir,
+      writeStartupLine
     );
   } catch (e) {
-    console.warn(
-      `[viber] MCP config error: ${e instanceof Error ? e.message : String(e)}`
+    writeStartupLine(
+      `[viber] mcp: config invalid — ${e instanceof Error ? e.message : String(e)}`
     );
   }
 
@@ -132,23 +177,45 @@ async function runInteractive(resumeSessionId?: string) {
   if (debugLog.enabled()) {
     const origWrite = process.stdout.write.bind(process.stdout);
     process.stdout.write = debugLog.wrapStdout(origWrite);
-    console.log("🔍 TUI stdout debug logging → " + debugLog.logPath() + "\n");
+    writeStartupLine(`[viber] debug: TUI stdout trace → ${debugLog.logPath()}`);
   }
 
   // Load previous messages if resuming
   let initialMessages: Message[] = [];
   let initialSessionName: string | undefined;
   let initialLlmUsageHistory: LlmUsageEvent[] | undefined;
+  let initialResumeBanner: string | undefined;
+  let initialSessionCreatedAt: string | undefined;
+  let initialSessionSteps: number | undefined;
+  let initialTurnCheckpoints: TurnCheckpoint[] | undefined;
   if (resumeSessionId) {
     const session = loadSession(resumeSessionId, cwd);
     if (session) {
       initialMessages = session.messages;
       initialSessionName = session.name;
       initialLlmUsageHistory = session.llmUsageHistory;
+      initialResumeBanner = formatSessionResumeBanner(session);
+      initialSessionCreatedAt = session.createdAt;
+      initialSessionSteps = session.stepCount;
+      initialTurnCheckpoints = session.turnCheckpoints;
+    }
+  }
+
+  const modelForSession =
+    config.MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
+  if (!loadSession(sessionId, cwd)) {
+    const createdAt = new Date().toISOString();
+    ensureEmptySessionFile(sessionId, cwd, {
+      model: modelForSession,
+      createdAt,
+    });
+    if (initialSessionCreatedAt === undefined) {
+      initialSessionCreatedAt = createdAt;
     }
   }
 
   try {
+    clearTerminalForInk();
     setInkUiLoggingMode(true);
     const app = render(
       React.createElement(App, {
@@ -158,6 +225,10 @@ async function runInteractive(resumeSessionId?: string) {
         initialMessages,
         initialSessionName,
         initialLlmUsageHistory,
+        initialResumeBanner,
+        initialSessionCreatedAt,
+        initialSessionSteps,
+        initialTurnCheckpoints,
       })
     );
     await app.waitUntilExit();
@@ -171,14 +242,19 @@ program
   .name("viber")
   .description("A minimal Node.js coding agent framework (interactive TUI)")
   .version(pkg.version)
-  .option("-r, --resume <session-id>", "resume a previous session")
+  .option(
+    "-r, --resume [session-id]",
+    "resume a session (omit id to use the latest updated session in this directory)"
+  )
   .option("--boarding", "interactive setup: BASE_URL, API_KEY, BASE_MODEL → config file")
-  .action(async (opts: { resume?: string; boarding?: boolean }) => {
+  .action(async (opts: { resume?: string | boolean; boarding?: boolean }) => {
     if (opts.boarding) {
       const ok = await runBoardingWizard();
       process.exit(ok ? 0 : 1);
     }
-    await runInteractive(opts.resume);
+    const cwd = process.cwd();
+    const resumeId = resolveResumeSessionId(opts.resume, cwd);
+    await runInteractive(resumeId);
   });
 
 function normalizeCliArgv(raw: string[]): string[] {

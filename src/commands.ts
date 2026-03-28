@@ -8,11 +8,21 @@ import { formatApiUsageSection } from "./utils/context-stats.js";
 import {
   loadSession,
   exportSessionToMarkdown,
+  truncateUsageHistoryToTranscriptLength,
+  truncateTurnCheckpointsToMessageLength,
+  resolveStepCountForRewind,
   type LlmUsageSnapshot,
+  type LlmUsageEvent,
+  type TurnCheckpoint,
 } from "./session-store.js";
+import {
+  findUserMessageIndices,
+  sliceToBeforeNthUserTurnFromEnd,
+} from "./rewind-transcript.js";
 import {
   SUB_SCREEN_SESSION,
   SUB_SCREEN_CONFIG,
+  SUB_SCREEN_REWIND,
   type OpenSubScreenRequest,
 } from "./tui/sub-screen-types.js";
 
@@ -104,6 +114,9 @@ export interface CommandContext {
   sessionName?: string;
   /** Last API completion usage for this session (persisted), for /context */
   lastLlmUsage?: LlmUsageSnapshot;
+  /** For /rewind step + usage alignment */
+  llmUsageHistory?: LlmUsageEvent[];
+  turnCheckpoints?: TurnCheckpoint[];
 }
 
 export interface CommandResult {
@@ -121,6 +134,49 @@ export interface CommandResult {
   openSubScreen?: OpenSubScreenRequest;
   /** Host runs a one-shot LLM summary of `context.messages` (TUI or CLI with resumed messages) */
   runSummary?: { hint?: string };
+  /** TUI: rewind transcript (applied in ink-app) */
+  rewind?: {
+    messages: Message[];
+    stepCount: number;
+    llmUsageHistory: LlmUsageEvent[];
+    turnCheckpoints: TurnCheckpoint[];
+  };
+}
+
+/** Shared rewind payload for TUI picker and `/rewind n` (returns null if nothing to drop). */
+export function buildRewindResult(
+  messages: Message[],
+  newMessages: Message[],
+  nUserTurnsRemoved: number,
+  context?: Pick<CommandContext, "llmUsageHistory" | "turnCheckpoints">
+): Pick<CommandResult, "output" | "rewind"> | null {
+  if (newMessages.length === messages.length) {
+    return null;
+  }
+  const L = newMessages.length;
+  const truncatedUsage = truncateUsageHistoryToTranscriptLength(
+    context?.llmUsageHistory,
+    L
+  );
+  const truncatedCp = truncateTurnCheckpointsToMessageLength(
+    context?.turnCheckpoints,
+    L
+  );
+  const stepCount = resolveStepCountForRewind(
+    context?.turnCheckpoints,
+    L,
+    truncatedUsage
+  );
+  const removed = messages.length - newMessages.length;
+  return {
+    output: `已回退 ${nUserTurnsRemoved} 轮用户消息（移除 ${removed} 条 transcript）。注意：工作区文件不会因 /rewind 而恢复。`,
+    rewind: {
+      messages: newMessages,
+      stepCount,
+      llmUsageHistory: truncatedUsage,
+      turnCheckpoints: truncatedCp,
+    },
+  };
 }
 
 export interface CommandDefinition {
@@ -360,6 +416,62 @@ registerCommand({
     return {
       handled: true,
       runSummary: hint ? { hint } : {},
+    };
+  },
+});
+
+// /rewind — drop last n user turns from model context (does not undo disk changes)
+registerCommand({
+  name: "rewind",
+  description:
+    "Pick a user message to rewind to (TUI), or /rewind n to drop last n user turns. Does not revert files on disk.",
+  aliases: ["rw"],
+  handler: (_args, context) => {
+    const messages = context?.messages ?? [];
+    const raw = _args.trim();
+    if (raw === "") {
+      const userIdx = findUserMessageIndices(messages);
+      if (userIdx.length === 0) {
+        return {
+          handled: true,
+          output: "当前没有可回退的用户消息。",
+        };
+      }
+      return {
+        handled: true,
+        openSubScreen: {
+          id: SUB_SCREEN_REWIND,
+          context: { messages },
+        } satisfies OpenSubScreenRequest,
+      };
+    }
+    let n = 1;
+    if (!/^\d+$/.test(raw)) {
+      return {
+        handled: true,
+        output:
+          "用法: /rewind — 打开列表选择回退位置；或 /rewind <n> — 回退最近 n 轮用户消息（n 为正整数）。",
+      };
+    }
+    n = Number.parseInt(raw, 10);
+    if (n < 1) {
+      return {
+        handled: true,
+        output:
+          "用法: /rewind — 打开列表选择回退位置；或 /rewind <n> — 回退最近 n 轮用户消息（n 为正整数）。",
+      };
+    }
+    const newMessages = sliceToBeforeNthUserTurnFromEnd(messages, n);
+    const built = buildRewindResult(messages, newMessages, n, context);
+    if (!built) {
+      return {
+        handled: true,
+        output: "当前没有可回退的用户消息。",
+      };
+    }
+    return {
+      handled: true,
+      ...built,
     };
   },
 });

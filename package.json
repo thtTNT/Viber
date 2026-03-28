@@ -29,6 +29,7 @@
   "files": [
     "dist",
     "prompts",
+    "tests",
     "README.md",
     "LICENSE"
   ],
@@ -39,6 +40,7 @@
     "dev": "tsx src/cli/cli.ts",
     "agent": "tsx src/cli/cli.ts",
     "boarding": "tsx src/cli/cli.ts --boarding",
+    "test": "VIBER_LOG_LEVEL=silent tsx --test tests/**/*.test.ts",
     "test:cli": "node scripts/test-cli-pty.mjs",
     "logs:pretty": "node scripts/pretty-upstream.mjs"
   },

@@ -38,7 +38,7 @@ export const ERROR_MISSING_API_KEY = 'Set OPENAI_API_KEY in environment.';
 export const USAGE_INSTRUCTIONS = `Usage: viber [options]
        viber                 — interactive chat (Ink TUI)
        viber --boarding      — guided setup (BASE_URL, API_KEY, BASE_MODEL)
-       viber -r <id>         — resume session`;
+       viber -r [id]         — resume session (omit id = latest in cwd)`;
 
 // ============================================================================
 // CLI OUTPUT MESSAGES
@@ -66,7 +66,8 @@ export const UI_LABELS = {
 /**
  * Available commands in interactive mode.
  */
-export const UI_COMMANDS = '/status /help /session /config /summary /mcp /clear /quit';
+export const UI_COMMANDS =
+  '/status /help /session /config /summary /mcp /rewind /clear /quit';
 
 /**
  * Appended to system prompt when TOOL_CALL_MODE is PTC.
@@ -93,6 +94,9 @@ export const UI_SYSTEM_MESSAGES = {
   /** After /summary: model context is only the compact summary below, not the prior transcript. */
   CONTEXT_REPLACED_BY_SUMMARY:
     "上下文已压缩：发往模型的历史已替换为下方摘要，此前的完整对话不再注入。",
+  /** Agent 正在运行时不可执行 /rewind */
+  REWIND_WHILE_VIBING:
+    "Agent 正在运行，无法执行 /rewind。请先等待结束或按 ESC 中断后再试。",
 } as const;
 
 /**

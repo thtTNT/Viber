@@ -68,7 +68,10 @@ function tryOpenMcpMiscLogFd(logFilePath: string): number | undefined {
   }
 }
 
-function resolveMcpMiscLogPath(workspaceCwd: string, conversationLogDir?: string): string {
+export function resolveMcpMiscLogPath(
+  workspaceCwd: string,
+  conversationLogDir?: string
+): string {
   if (conversationLogDir) {
     return join(conversationLogDir, MCP_SERVER_MISC_LOG);
   }
@@ -126,15 +129,18 @@ export function emptyMcpSession(): McpSession {
  * Start stdio MCP servers from `.viber/config.json`, list tools, build extraTools. Caller must `close()` when done.
  *
  * @param conversationLogDir — Same folder as upstream LLM logs (`ConversationContext.logDir`); MCP stderr goes to `misc.log` there. Omit to use `.viber/misc.log` under `cwd` (e.g. `/mcp` probe).
+ * @param onStartupLog — One line per call; used for CLI startup banner before the TUI clears the screen.
  */
 export async function createMcpSession(
   cwd: string,
   onServerError?: (serverId: string, err: Error) => void,
-  conversationLogDir?: string
+  conversationLogDir?: string,
+  onStartupLog?: (line: string) => void
 ): Promise<McpSession> {
   const loaded = loadWorkspaceViberConfig(cwd);
   if (!loaded.ok) {
     if (loaded.reason === "missing") {
+      onStartupLog?.("[viber] mcp: no .viber/config.json (stdio MCP skipped)");
       return emptyMcpSession();
     }
     throw new Error(`${loaded.path}: ${loaded.message}`);
@@ -142,15 +148,28 @@ export async function createMcpSession(
 
   const servers = getMcpServersFromWorkspace(loaded.data);
   if (!servers || Object.keys(servers).length === 0) {
+    onStartupLog?.("[viber] mcp: no servers in config (stdio MCP idle)");
     return emptyMcpSession();
   }
+
+  const serverEntries = Object.entries(servers);
+  onStartupLog?.(`[viber] mcp: starting ${serverEntries.length} server(s)`);
 
   const clients: Client[] = [];
   const extraTools: McpExtraTool[] = [];
   const usedOpenAiNames = new Set<string>();
-  const miscLogFd = tryOpenMcpMiscLogFd(resolveMcpMiscLogPath(cwd, conversationLogDir));
+  const miscLogPath = resolveMcpMiscLogPath(cwd, conversationLogDir);
+  const miscLogFd = tryOpenMcpMiscLogFd(miscLogPath);
+  if (miscLogFd !== undefined) {
+    onStartupLog?.(`[viber] mcp: subprocess stderr → ${miscLogPath}`);
+  } else {
+    onStartupLog?.(
+      "[viber] mcp: could not open stderr log file (servers still start)"
+    );
+  }
 
-  for (const [serverId, entry] of Object.entries(servers)) {
+  for (const [serverId, entry] of serverEntries) {
+    onStartupLog?.(`[viber] mcp: connecting "${serverId}" …`);
     let client: Client;
     try {
       client = await connectServer(serverId, entry, miscLogFd);
@@ -176,6 +195,7 @@ export async function createMcpSession(
       continue;
     }
 
+    const toolsBefore = extraTools.length;
     for (const tool of tools) {
       if (mcpToolUnsupported(tool)) {
         continue;
@@ -210,7 +230,15 @@ export async function createMcpSession(
         },
       });
     }
+    const bridged = extraTools.length - toolsBefore;
+    onStartupLog?.(
+      `[viber] mcp: "${serverId}" ready (${bridged} tool(s) bridged to the agent)`
+    );
   }
+
+  onStartupLog?.(
+    `[viber] mcp: done (${extraTools.length} tool(s) total from MCP)`
+  );
 
   return {
     extraTools,

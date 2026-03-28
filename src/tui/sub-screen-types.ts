@@ -8,8 +8,11 @@
  * 4. `cli/ink-app.tsx` 已在有 `openSubScreen` 时挂载 `SubScreenHost`，一般无需改。
  */
 
+import type { Message } from "../types.js";
+
 export const SUB_SCREEN_SESSION = "session" as const;
 export const SUB_SCREEN_CONFIG = "config" as const;
+export const SUB_SCREEN_REWIND = "rewind" as const;
 
 export type SessionSubScreenContext = {
   activeSessionId: string;
@@ -20,6 +23,11 @@ export type SessionSubScreenContext = {
 
 export type ConfigSubScreenContext = Record<string, never>;
 
+export type RewindSubScreenContext = {
+  /** Transcript (no system row), same as active chat */
+  messages: Message[];
+};
+
 export type OpenSubScreenRequest =
   | {
       id: typeof SUB_SCREEN_SESSION;
@@ -28,4 +36,8 @@ export type OpenSubScreenRequest =
   | {
       id: typeof SUB_SCREEN_CONFIG;
       context: ConfigSubScreenContext;
+    }
+  | {
+      id: typeof SUB_SCREEN_REWIND;
+      context: RewindSubScreenContext;
     };
